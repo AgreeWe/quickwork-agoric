@@ -1,35 +1,74 @@
 /* global harden */
+
 import '@agoric/zoe/exported.js';
-import { Far } from '@endo/marshal';
 import { assert } from '@agoric/assert';
 import { assertProposalShape } from '@agoric/zoe/src/contractSupport/index.js';
-import { AmountMath } from '@agoric/ertp';
+import { AmountMath, makeIssuerKit } from '@agoric/ertp';
+
+/**
+ * Contract for Quickwork.
+ *
+ * This contract allows a manager to create tasks, which can be approved or rejected by an approver.
+ * Funds can be deposited for tasks and withdrawn by the payee or manager.
+ */
 
 const start = async (zcf) => {
+  const terms = zcf.getTerms();
+  const issuer = terms.issuers.USDT;
+  const brand = terms.brands.USDT;
 
-  let managerAddress;
   const tasks = new Map();
   const balances = new Map();
 
+  const { mint: withdrawalMint, issuer: withdrawalIssuer } = makeIssuerKit('USDT');
+  let managerAddress;
+
   const setManagerAddress = (newManagerAddress) => {
     assert(
-      managerAddress === undefined, `Manager address has already been set and cannot be updated.`
+      managerAddress === undefined,
+      `Manager address has already been set and cannot be updated.`
     );
     managerAddress = newManagerAddress;
     return true;
   };
+
   const getManagerAddress = () => managerAddress;
 
-  const addTask = (task, callerAddress) => {
-    assert(managerAddress !== undefined, `Manager address has not been set.`);
-    assert(callerAddress === managerAddress, `Only the manager can add tasks.`);
-    assert(task.taskId && task.amount && task.payerAddress && task.payeeAddress && task.approverAddress, `All fields are required to create a task.`);
-    assert(task.payerAddress !== task.payeeAddress, `Payer and Payee addresses must be distinct.`);
+  const addTask = zcf.makeInvitation((seat, rawTask) => {
+    assertProposalShape(seat, { give: { USDT: null } });
+    const depositedAmount = seat.getAmountAllocated('USDT', brand);
+    assert(depositedAmount.value > 0n, 'Amount must be greater than 0');
+
+    const task = {
+      taskId: rawTask.taskId,
+      payerAddress: rawTask.payerAddress,
+      payeeAddress: rawTask.payeeAddress,
+      approverAddress: rawTask.approverAddress,
+      amount: depositedAmount.value,
+      status: 'PENDING',
+    };
+
+    assert(
+      task.taskId && task.payerAddress && task.payeeAddress && task.approverAddress,
+      `All fields are required to create a task.`
+    );
+    assert(
+      task.payerAddress !== task.payeeAddress,
+      `Payer and Payee addresses must be distinct.`
+    );
     assert(!tasks.has(task.taskId), `Task ID already exists.`);
 
-    task.status = 'PENDING';
     tasks.set(task.taskId, task);
-    return `Task added: ${task.taskId}`;
+    balances.set(task.taskId, depositedAmount.value);
+    seat.exit();
+
+    return task;
+  }, 'deposit');
+
+  const askAddTask = (callerAddress) => {
+    assert(managerAddress !== undefined, `Manager address has not been set.`);
+    assert(callerAddress === managerAddress, `Only the manager can add tasks.`);
+    return { addTask };
   };
 
   const approveTask = (taskId, callerAddress) => {
@@ -38,10 +77,10 @@ const start = async (zcf) => {
     assert(task.status === 'PENDING', `Task is not in a PENDING status.`);
     assert(callerAddress === task.approverAddress, `Only the approver can approve the task.`);
 
-    task.status = 'APPROVED';
+    const updatedTask = { ...task, status: 'APPROVED' };
+    tasks.set(taskId, updatedTask);
 
-    // Update the balance of the payee
-    const currentBalance = balances.get(task.payeeAddress) || 0;
+    const currentBalance = balances.get(task.payeeAddress) || 0n;
     const newBalance = currentBalance + task.amount;
     balances.set(task.payeeAddress, newBalance);
 
@@ -54,50 +93,51 @@ const start = async (zcf) => {
     assert(task.status === 'PENDING', `Task is not in a PENDING status.`);
     assert(callerAddress === task.approverAddress, `Only the approver can reject the task.`);
 
-    task.status = 'REJECTED';
+    const updatedTask = { ...task, status: 'REJECTED' };
+    tasks.set(taskId, updatedTask);
 
-    // Update the balance of the payee
-    const currentBalance = balances.get(task.payerAddress) || 0;
+    const currentBalance = balances.get(managerAddress) || 0n;
     const newBalance = currentBalance + task.amount;
-    balances.set(task.payerAddress, newBalance);
+    balances.set(managerAddress, newBalance);
 
     return taskId;
   };
 
-  const withdraw = (callerAddress) => {
-    const balance = balances.get(callerAddress) || 0;
-    assert(balance > 0, `No funds available for withdrawal.`);
-
-    // Create a payment for the user
-    // const payment = zcf.mintPayment(AmountMath.make(balance));
-    balances.set(callerAddress, 0);
-
-    return balance;
+  const getBalance = (address) => {
+    return balances.get(address) || 0n;
   };
 
   const getTask = (taskId) => {
     return tasks.get(taskId);
   };
 
-  const getBalance = (address) => {
-    return balances.get(address) || 0;
+  setManagerAddress(terms.managerAddress);
+
+  const withdraw = (address) => {
+    const balance = getBalance(address);
+    const withdrawalBrand = withdrawalIssuer.getBrand();
+    const payment = withdrawalMint.mintPayment(AmountMath.make(withdrawalBrand, balance));
+    balances.set(address, 0n);
+    return payment;
+  };
+
+  const askWithdraw = (callerAddress) => {
+    assert(balances.has(callerAddress), `No balance for address ${callerAddress}`);
+    return withdraw(callerAddress);
   };
 
   const publicFacet = {
     getManagerAddress,
-    addTask,
+    askAddTask,
     approveTask,
     rejectTask,
-    withdraw,
-    getTask,
     getBalance,
+    getTask,
+    askWithdraw,
+    getIssuer: () => withdrawalIssuer,
+    getBrand: () => brand,
   };
 
-  // Set the manager address during deployment
-  const terms = zcf.getTerms();
-  setManagerAddress(terms.managerAddress);
-
-  // Create a creatorInvitation
   const creatorInvitation = zcf.makeInvitation(() => {
     return managerAddress;
   }, 'creator');
@@ -107,69 +147,3 @@ const start = async (zcf) => {
 
 harden(start);
 export { start };
-
-
-
-
-
-
-
-//
-// /* global harden */
-// import '@agoric/zoe/exported.js';
-// import { Far } from '@endo/marshal';
-// import { assert } from '@agoric/assert';
-//
-// const start = (zcf) => {
-//   const tasks = new Map();
-//   // Store the manager's identity from the contract terms
-//   const manager = zcf.getTerms().manager;
-//
-//   const addTask = (seat, taskId, payerAddress, payeeAddress, approverAddress) => {
-//     // Ensure only the manager can call this method
-//     assert(seat.hasExited() === false, 'The seat has already exited');
-//     assert(seat.getNotifier().getUpdateSince().value.user === manager, 'Only the manager can add tasks');
-//
-//     assert(!tasks.has(taskId), "Task ID already exists");
-//     assert(payerAddress !== payeeAddress, "Payer and Payee addresses must be distinct");
-//
-//     // Get the amount from the seat's current allocation
-//     const amount = seat.getCurrentAllocation().RUN;
-//     assert(amount, "Amount should be present");
-//     assert(amount.value > 0n, "Amount should be greater than 0");
-//
-//     const task = {
-//       id: taskId,
-//       amount,
-//       payerAddress,
-//       payeeAddress,
-//       approverAddress
-//     };
-//
-//     tasks.set(taskId, task);
-//
-//     // Since the assets are already escrowed with Zoe when the offer is made,
-//     // there's no need to handle the deposit here. The contract can use these assets as needed.
-//
-//     seat.exit();
-//
-//     return taskId;
-//   };
-//
-//   const makeAddTaskInvitation = () => {
-//     return zcf.makeInvitation((seat) => {
-//       const offerArgs = seat.getOfferArgs();
-//       const [taskId, payerAddress, payeeAddress, approverAddress] = offerArgs;
-//       return addTask(seat, taskId, payerAddress, payeeAddress, approverAddress);
-//     }, 'addTask');
-//   };
-//
-//   const creatorFacet = Far('creatorFacet', {
-//     makeAddTaskInvitation,
-//   });
-//
-//   return { creatorFacet };
-// };
-//
-// harden(start);
-// export { start };

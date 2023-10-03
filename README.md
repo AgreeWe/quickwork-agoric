@@ -41,7 +41,5 @@ agoric deploy contract/quickwork.js
 
 - `askWithdraw(callerAddress)`: Withdraw funds for a given address.
 
-## Issues & Contributions
-
-If you encounter any issues or would like to contribute to the project, please [open an issue](#) or submit a pull
-request.
+## Author
+Agoric Team

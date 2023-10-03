@@ -1,7 +1,3 @@
-Certainly! Here's a README file for your project:
-
----
-
 # Quickwork Contract
 
 Quickwork is a smart contract built on the Agoric platform. It allows a manager to create tasks, which can be approved

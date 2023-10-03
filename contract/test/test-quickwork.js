@@ -30,7 +30,7 @@ const setupTest = async () => {
 
   // Define the manager address and start the Zoe instance
   const managerAddress = '0x1234';
-  const { creatorInvitation, publicFacet } = await E(zoe).startInstance(installation, { USDT: issuer }, { managerAddress });
+  const { creatorInvitation, publicFacet } = await E(zoe).startInstance(installation, { USDT: issuer }, { managerAddress, Mint: mint });
 
   // Define a sample task and the deposit amount
   const task = {

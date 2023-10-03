@@ -16,11 +16,10 @@ const start = async (zcf) => {
   const terms = zcf.getTerms();
   const issuer = terms.issuers.USDT;
   const brand = terms.brands.USDT;
+  const mint = terms.Mint;
 
   const tasks = new Map();
   const balances = new Map();
-
-  const { mint: withdrawalMint, issuer: withdrawalIssuer } = makeIssuerKit('USDT');
   let managerAddress;
 
   const setManagerAddress = (newManagerAddress) => {
@@ -115,8 +114,7 @@ const start = async (zcf) => {
 
   const withdraw = (address) => {
     const balance = getBalance(address);
-    const withdrawalBrand = withdrawalIssuer.getBrand();
-    const payment = withdrawalMint.mintPayment(AmountMath.make(withdrawalBrand, balance));
+    const payment = mint.mintPayment(AmountMath.make(brand, balance));
     balances.set(address, 0n);
     return payment;
   };
@@ -134,7 +132,7 @@ const start = async (zcf) => {
     getBalance,
     getTask,
     askWithdraw,
-    getIssuer: () => withdrawalIssuer,
+    getIssuer: () => issuer,
     getBrand: () => brand,
   };
 
